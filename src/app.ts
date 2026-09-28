@@ -148,8 +148,18 @@ btnDraw.addEventListener("click", async () => {
   renderThemes();
 };
 
-// 4. DELETE - Excluir um tema
+// 4. DELETE - Excluir um tema com confirmação
 (window as any).deleteTheme = async (id: string) => {
+  // Procura o tema na lista para mostrar o nome na mensagem de confirmação
+  const themeToDelete = themes.find(t => t.id === id);
+  const themeName = themeToDelete ? `"${themeToDelete.name}"` : "este tema";
+
+  // Pergunta ao usuário antes de prosseguir
+  const confirmed = window.confirm(`Tem certeza que deseja excluir ${themeName}?`);
+
+  // Se o usuário clicar em "Cancelar", interrompe a execução
+  if (!confirmed) return;
+
   const { error } = await supabase
     .from('themes')
     .delete()
@@ -157,9 +167,11 @@ btnDraw.addEventListener("click", async () => {
 
   if (error) {
     console.error('Erro ao deletar tema:', error);
+    alert('Erro ao excluir o tema. Tente novamente.');
     return;
   }
 
+  // Remove da lista local e atualiza a tela
   themes = themes.filter(t => t.id !== id);
   renderThemes();
 };

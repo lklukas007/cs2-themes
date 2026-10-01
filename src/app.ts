@@ -10,35 +10,24 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// Interfaces de Tipagem
+// Interfaces
 interface Theme {
   id: string;
+  user_id: string;
   name: string;
   used: boolean;
   created_at?: string;
 }
 
-interface UserPermission {
-  id: string;
-  email: string;
-  is_approved: boolean;
-  is_admin: boolean;
-}
-
 // Estados Locais
 let themes: Theme[] = [];
 let currentUser: User | null = null;
-let isAdmin = false;
-let isApprovedUser = false;
 
-// Captura de Elementos do DOM
+// Elementos do DOM
 const loginScreen = document.getElementById("login-screen") as HTMLDivElement;
 const mainContent = document.getElementById("main-content") as HTMLDivElement;
 const btnLoginGoogle = document.getElementById("btn-login-google") as HTMLButtonElement;
-const btnLogout = document.getElementById("btn-logout") as HTMLButtonElement;
 const btnLogoutMain = document.getElementById("btn-logout-main") as HTMLButtonElement;
-const authStatus = document.getElementById("auth-status") as HTMLDivElement;
-const adminPanel = document.getElementById("admin-panel") as HTMLDivElement;
 
 const themeForm = document.getElementById("theme-form") as HTMLFormElement;
 const themeInput = document.getElementById("theme-input") as HTMLInputElement;
@@ -47,7 +36,7 @@ const btnDraw = document.getElementById("btn-draw") as HTMLButtonElement;
 const drawnResult = document.getElementById("drawn-result") as HTMLDivElement;
 
 // ==========================================
-// 🔐 AUTENTICAÇÃO E PERMISSÕES
+// 🔐 AUTENTICAÇÃO
 // ==========================================
 
 // Login com Google OAuth
@@ -66,10 +55,9 @@ const handleLogout = async () => {
   window.location.reload();
 };
 
-btnLogout?.addEventListener("click", handleLogout);
 btnLogoutMain?.addEventListener("click", handleLogout);
 
-// Verifica Permissões e Estado da Sessão
+// Checagem de Autenticação Simplificada (Sem Painel de Aprovação)
 async function checkAuth(): Promise<void> {
   const { data: { session }, error: sessionError } = await supabase.auth.getSession();
 
@@ -79,68 +67,17 @@ async function checkAuth(): Promise<void> {
   }
 
   currentUser = session.user;
-  const userEmail = currentUser.email;
+  showMainScreen();
 
-  if (!userEmail) {
-    showLoginScreen();
-    return;
-  }
-
-  // Consulta a tabela de permissões no Supabase
-  const { data: permission, error: permError } = await supabase
-    .from('user_permissions')
-    .select('is_approved, is_admin')
-    .eq('email', userEmail)
-    .maybeSingle();
-
-  if (permError) {
-    console.error('Erro ao consultar permissões:', permError);
-  }
-
-  if (!permission) {
-    // Se for o primeiro acesso, registra a solicitação como pendente
-    await supabase.from('user_permissions').insert([{ email: userEmail, is_approved: false, is_admin: false }]);
-    isApprovedUser = false;
-    isAdmin = false;
-  } else {
-    isApprovedUser = permission.is_approved;
-    isAdmin = permission.is_admin;
-  }
-
-  if (isApprovedUser) {
-    showMainScreen();
-    if (isAdmin) {
-      loadAdminPanel();
-    }
-    await fetchThemes(); // Carrega os temas assim que for liberado
-  } else {
-    showPendingApproval(userEmail);
-  }
+  // Carrega apenas os dados do usuário atual e ativa a sincronização
+  await fetchThemes();
+  await fetchLastDrawnTheme();
+  subscribeToRealtime();
 }
 
-// Controle de Telas
 function showLoginScreen(): void {
   loginScreen?.classList.remove("hidden");
   mainContent?.classList.add("hidden");
-  btnLoginGoogle?.classList.remove("hidden");
-  btnLogout?.classList.add("hidden");
-  if (authStatus) authStatus.innerHTML = "";
-}
-
-function showPendingApproval(email: string): void {
-  loginScreen?.classList.remove("hidden");
-  mainContent?.classList.add("hidden");
-  btnLoginGoogle?.classList.add("hidden");
-  btnLogout?.classList.remove("hidden");
-
-  if (authStatus) {
-    authStatus.innerHTML = `
-      <div class="bg-amber-900/30 border border-amber-500/50 p-4 rounded-lg text-amber-300 text-left text-sm">
-        <p class="font-bold text-base mb-1">⚠️ Acesso Pendente</p>
-        <p>Sua conta (<strong>${email}</strong>) foi registrada, mas precisa da aprovação do administrador para acessar o site.</p>
-      </div>
-    `;
-  }
 }
 
 function showMainScreen(): void {
@@ -148,7 +85,7 @@ function showMainScreen(): void {
   mainContent?.classList.remove("hidden");
 }
 
-// Escuta mudanças de sessão para garantir o estado após redirecionamento
+// Escuta eventos de sessão
 supabase.auth.onAuthStateChange((event, session) => {
   if (event === 'SIGNED_IN' || session) {
     checkAuth();
@@ -158,59 +95,10 @@ supabase.auth.onAuthStateChange((event, session) => {
 });
 
 // ==========================================
-// 🛡️ PAINEL DO ADMINISTRADOR (APROVAÇÃO)
+// 🎯 GERENCIAMENTO DE TEMAS (CRUD MULTIUSUÁRIO)
 // ==========================================
 
-async function loadAdminPanel(): Promise<void> {
-  if (!adminPanel) return;
-  adminPanel.classList.remove("hidden");
-
-  const { data: permissions } = await supabase
-    .from('user_permissions')
-    .select('*')
-    .order('created_at', { ascending: false });
-
-  const listContainer = document.getElementById("permissions-list");
-  if (!listContainer) return;
-
-  listContainer.innerHTML = "";
-
-  permissions?.forEach((p: UserPermission) => {
-    if (p.is_admin) return; // Não exibe admins na lista de aprovação
-
-    const li = document.createElement("li");
-    li.className = "flex items-center justify-between bg-slate-900 p-3 rounded-lg border border-slate-700 my-2";
-    li.innerHTML = `
-      <span class="text-sm text-slate-200 font-medium">${p.email}</span>
-      <button 
-        onclick="toggleUserApproval('${p.id}', ${!p.is_approved})"
-        class="text-xs px-3 py-1.5 rounded font-bold transition ${
-          p.is_approved 
-            ? 'bg-red-900/50 hover:bg-red-800 text-red-200 border border-red-700' 
-            : 'bg-emerald-600 hover:bg-emerald-500 text-white'
-        }"
-      >
-        ${p.is_approved ? 'Revogar Acesso' : 'Aprovar Acesso'}
-      </button>
-    `;
-    listContainer.appendChild(li);
-  });
-}
-
-(window as any).toggleUserApproval = async (id: string, newStatus: boolean) => {
-  await supabase
-    .from('user_permissions')
-    .update({ is_approved: newStatus })
-    .eq('id', id);
-
-  loadAdminPanel();
-};
-
-// ==========================================
-// 🎯 GERENCIAMENTO DE TEMAS (CRUD)
-// ==========================================
-
-// 1. READ - Buscar Temas
+// 1. READ - Buscar Temas (O RLS do Supabase já filtra por usuário automaticamente)
 async function fetchThemes(): Promise<void> {
   const { data, error } = await supabase
     .from('themes')
@@ -226,13 +114,33 @@ async function fetchThemes(): Promise<void> {
   renderThemes();
 }
 
-// Renderizar Lista na Tela
+// 2. READ - Buscar Último Tema Sorteado do Usuário
+async function fetchLastDrawnTheme(): Promise<void> {
+  const { data, error } = await supabase
+    .from('themes')
+    .select('name')
+    .eq('used', true)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    console.error('Erro ao buscar último tema:', error);
+    return;
+  }
+
+  if (data && drawnResult) {
+    drawnResult.innerHTML = `🎉 Último Tema Sorteado: <br><span class="text-amber-400 text-3xl font-extrabold">${data.name}</span>`;
+  }
+}
+
+// Renderizar Lista
 function renderThemes(): void {
   if (!themeList) return;
   themeList.innerHTML = "";
 
   if (themes.length === 0) {
-    themeList.innerHTML = `<li class="text-slate-500 text-center py-4">Nenhum tema cadastrado no banco.</li>`;
+    themeList.innerHTML = `<li class="text-slate-500 text-center py-4">Nenhum tema cadastrado. Crie o seu primeiro abaixo!</li>`;
     return;
   }
 
@@ -266,15 +174,19 @@ function renderThemes(): void {
   });
 }
 
-// 2. CREATE - Criar Novo Tema
+// 3. CREATE - Inserir Tema (Injetando user_id)
 themeForm?.addEventListener("submit", async (e) => {
   e.preventDefault();
   const name = themeInput.value.trim();
-  if (!name) return;
+  if (!name || !currentUser) return;
 
   const { data, error } = await supabase
     .from('themes')
-    .insert([{ name, used: false }])
+    .insert([{ 
+      name, 
+      used: false,
+      user_id: currentUser.id // 👈 Obrigatório para a regra do RLS
+    }])
     .select();
 
   if (error) {
@@ -294,7 +206,7 @@ btnDraw?.addEventListener("click", async () => {
   const availableThemes = themes.filter(t => !t.used);
 
   if (availableThemes.length === 0) {
-    if (drawnResult) drawnResult.innerHTML = "⚠️ Todos os temas já foram usados!";
+    if (drawnResult) drawnResult.innerHTML = "⚠️ Todos os seus temas já foram usados!";
     return;
   }
 
@@ -318,7 +230,7 @@ btnDraw?.addEventListener("click", async () => {
   renderThemes();
 });
 
-// 3. UPDATE - Riscar / Desmarcar Tema
+// 4. UPDATE - Riscar/Desmarcar
 (window as any).toggleTheme = async (id: string, currentStatus: boolean) => {
   const newStatus = !currentStatus;
 
@@ -336,7 +248,7 @@ btnDraw?.addEventListener("click", async () => {
   renderThemes();
 };
 
-// 4. DELETE - Excluir Tema com Confirmação
+// 5. DELETE - Excluir
 (window as any).deleteTheme = async (id: string) => {
   const themeToDelete = themes.find(t => t.id === id);
   const themeName = themeToDelete ? `"${themeToDelete.name}"` : "este tema";
@@ -358,6 +270,24 @@ btnDraw?.addEventListener("click", async () => {
   themes = themes.filter(t => t.id !== id);
   renderThemes();
 };
+
+// ==========================================
+// ⚡ TEMPO REAL (REALTIME)
+// ==========================================
+
+function subscribeToRealtime(): void {
+  supabase
+    .channel('themes-realtime-changes')
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'themes' },
+      () => {
+        fetchThemes();
+        fetchLastDrawnTheme();
+      }
+    )
+    .subscribe();
+}
 
 // Inicialização
 checkAuth();
